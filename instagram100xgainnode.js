@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Instagram Mic 100x Gain Booster
+// @name         Instagram Mic 10x Gain Booster
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @match        https://www.instagram.com/*
@@ -11,7 +11,7 @@
 (function() {
     'use strict';
 
-    const GainMultiplier = 100; // 10x gain boost
+    const GainMultiplier = 10; // 10x gain boost
 
     const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 
