@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Web - Zero Filters + 20x Gain (Upgraded)
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.1
 // @description  Disables all Chromium mic processing, activates tracks, and boosts raw audio gain by 20x safely.
 // @match        https://discord.com/*
 // @grant        none
