@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Discord Mobile Web - True Wide Stereo & Loudmic HUD (Android Fix)
+// @name         Discord Mobile Web - Touch Toggle Loudmic HUD
 // @namespace    http://tampermonkey.net/
-// @version      15.0
-// @description  Android Chromium touchscreen-optimized loudmic with explicit UI injection fixes and forced AudioContext unlock.
+// @version      16.0
+// @description  Android Chromium optimized loudmic with toggleable touch HUD, 20000x gain, 430Hz HPF, and 384kbps CBR Opus override.
 // @match        https://discord.com/*
 // @grant        none
 // @license      MIT
@@ -227,19 +227,26 @@
         return origSetRemoteDescription.apply(this, arguments);
     };
 
-    // 4. Reliable Mobile Injection & HUD Creation
+    // 4. Toggleable Floating Mobile Trigger & Popup HUD
     const createUI = () => {
-        if (document.getElementById('discord-audio-hud')) return;
+        if (document.getElementById('dah-trigger-btn')) return;
 
         const targetNode = document.body || document.documentElement;
         if (!targetNode) return;
 
+        // Floating Trigger Button (Always visible on screen side)
+        const triggerBtn = document.createElement('button');
+        triggerBtn.id = 'dah-trigger-btn';
+        triggerBtn.innerHTML = '🎙️ LOUD';
+
+        // Popup HUD Container (Hidden by default)
         const container = document.createElement('div');
         container.id = 'discord-audio-hud';
+        container.className = 'dah-hidden';
         container.innerHTML = `
             <div id="dah-header">
-                <span>🎙️ LOUDMC STEREO HUD</span>
-                <button id="dah-minimize" aria-label="Minimize HUD">_</button>
+                <span>LOUDMC STEREO HUD</span>
+                <button id="dah-close" aria-label="Close HUD">✕</button>
             </div>
             <div id="dah-body">
                 <div class="dah-section">
@@ -286,32 +293,50 @@
 
         const style = document.createElement('style');
         style.innerHTML = `
+            #dah-trigger-btn {
+                position: fixed !important;
+                bottom: 80px !important;
+                right: 12px !important;
+                background: #5865F2 !important;
+                color: white !important;
+                border: 2px solid #ffffff !important;
+                border-radius: 50px !important;
+                padding: 12px 18px !important;
+                font-weight: bold !important;
+                font-size: 14px !important;
+                z-index: 2147483647 !important;
+                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7) !important;
+                cursor: pointer !important;
+            }
             #discord-audio-hud {
                 position: fixed !important;
-                top: 60px !important;
-                right: 12px !important;
-                width: 310px !important;
-                max-width: 90vw !important;
+                top: 50% !important;
+                left: 50% !important;
+                transform: translate(-50%, -50%) !important;
+                width: 320px !important;
+                max-width: 92vw !important;
                 background: rgba(18, 20, 28, 0.98) !important;
                 border: 2px solid #5865F2 !important;
                 border-radius: 16px !important;
                 color: #ffffff !important;
                 font-family: system-ui, -apple-system, sans-serif !important;
                 z-index: 2147483647 !important;
-                box-shadow: 0 12px 36px rgba(0, 0, 0, 0.9) !important;
-                touch-action: none !important;
+                box-shadow: 0 12px 40px rgba(0, 0, 0, 0.95) !important;
                 overflow: hidden !important;
+            }
+            #discord-audio-hud.dah-hidden {
+                display: none !important;
             }
             #dah-header {
                 background: #5865F2 !important;
-                padding: 12px 14px !important;
+                padding: 14px 16px !important;
                 font-weight: bold !important;
-                font-size: 13px !important;
+                font-size: 14px !important;
                 display: flex !important;
                 justify-content: space-between !important;
                 align-items: center !important;
             }
-            #dah-minimize {
+            #dah-close {
                 background: rgba(0, 0, 0, 0.3) !important;
                 border: none !important;
                 color: white !important;
@@ -319,12 +344,13 @@
                 height: 32px !important;
                 border-radius: 8px !important;
                 font-weight: bold !important;
+                font-size: 16px !important;
             }
             #dah-body {
-                padding: 12px !important;
+                padding: 14px !important;
                 display: flex !important;
                 flex-direction: column !important;
-                gap: 10px !important;
+                gap: 12px !important;
                 max-height: 70vh !important;
                 overflow-y: auto !important;
                 touch-action: pan-y !important;
@@ -341,20 +367,21 @@
                 display: flex !important;
                 justify-content: space-between !important;
                 align-items: center !important;
-                font-size: 12px !important;
+                font-size: 13px !important;
             }
             input[type="range"] {
                 width: 100% !important;
-                height: 10px !important;
+                height: 12px !important;
             }
             #dah-gain-text {
-                width: 65px !important;
+                width: 70px !important;
                 background: #202225 !important;
                 border: 1px solid #5865F2 !important;
                 color: #fff !important;
                 text-align: center !important;
                 border-radius: 6px !important;
-                padding: 4px !important;
+                padding: 6px !important;
+                font-weight: bold;
             }
             .dah-presets {
                 display: grid !important;
@@ -366,8 +393,9 @@
                 border: 1px solid #4f545c !important;
                 color: #fff !important;
                 padding: 8px 0 !important;
-                font-size: 10px !important;
+                font-size: 11px !important;
                 border-radius: 6px !important;
+                font-weight: bold;
             }
             .dah-preset-btn.active {
                 background: #5865F2 !important;
@@ -376,17 +404,25 @@
                 background: #ed4245 !important;
                 color: white !important;
                 border: none !important;
-                padding: 10px !important;
+                padding: 12px !important;
                 border-radius: 8px !important;
                 font-weight: bold !important;
-            }
-            .minimized #dah-body {
-                display: none !important;
+                text-transform: uppercase;
             }
         `;
 
         document.head ? document.head.appendChild(style) : targetNode.appendChild(style);
+        targetNode.appendChild(triggerBtn);
         targetNode.appendChild(container);
+
+        // Toggle visibility handlers
+        triggerBtn.addEventListener('click', () => {
+            container.classList.toggle('dah-hidden');
+        });
+
+        document.getElementById('dah-close').addEventListener('click', () => {
+            container.classList.add('dah-hidden');
+        });
 
         const gainRange = document.getElementById('dah-gain-range');
         const gainText = document.getElementById('dah-gain-text');
@@ -395,8 +431,6 @@
         const hpToggle = document.getElementById('dah-hp-toggle');
         const widerToggle = document.getElementById('dah-wider-toggle');
         const resetBtn = document.getElementById('dah-reset');
-        const minimizeBtn = document.getElementById('dah-minimize');
-        const hud = document.getElementById('discord-audio-hud');
         const presetBtns = document.querySelectorAll('.dah-preset-btn');
 
         const updateGain = (val) => {
@@ -465,47 +499,16 @@
             updateWiderStereo(false);
         });
 
-        let minimized = false;
-        minimizeBtn.addEventListener('click', () => {
-            minimized = !minimized;
-            hud.classList.toggle('minimized', minimized);
-            minimizeBtn.innerText = minimized ? '+' : '_';
-        });
-
-        // Touch Drag Logic for Mobile Header
-        let isDragging = false, startX = 0, startY = 0, initialX = 0, initialY = 0;
-        const header = document.getElementById('dah-header');
-
-        header.addEventListener('touchstart', (e) => {
-            if (e.target === minimizeBtn) return;
-            isDragging = true;
-            startX = e.touches[0].clientX;
-            startY = e.touches[0].clientY;
-            initialX = hud.offsetLeft;
-            initialY = hud.offsetTop;
-        }, { passive: true });
-
-        window.addEventListener('touchmove', (e) => {
-            if (!isDragging) return;
-            const dx = e.touches[0].clientX - startX;
-            const dy = e.touches[0].clientY - startY;
-            hud.style.left = `${initialX + dx}px`;
-            hud.style.top = `${initialY + dy}px`;
-            hud.style.right = 'auto';
-        }, { passive: true });
-
-        window.addEventListener('touchend', () => { isDragging = false; });
-
         updateGain(1.0);
     };
 
-    // Continuous check loop to ensure UI injects even if document body mounts late
+    // Continuous check loop to guarantee injection on Discord's React router
     const tryInject = () => {
-        if (!document.getElementById('discord-audio-hud') && (document.body || document.documentElement)) {
+        if (!document.getElementById('dah-trigger-btn') && (document.body || document.documentElement)) {
             createUI();
         }
     };
 
-    setInterval(tryInject, 500);
+    setInterval(tryInject, 1000);
     document.addEventListener('DOMContentLoaded', tryInject);
 })();
