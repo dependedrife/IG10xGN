@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Discord Mobile View - Full Loudmic, Stereo HUD & Mutable Mirroring
+// @name         Discord Mobile View - EQ-APO Polyverse Wider Loudmic HUD
 // @namespace    http://tampermonkey.net/
-// @version      21.0
-// @description  Full Android Edge mobile-view loudmic script with mutable audio mirroring, 20000x gain, stereo HUD, and stripped DSP flags.
+// @version      25.0
+// @description  Studio-grade EQ-APO style stereo audio controller with Polyverse Wider effect, mutable audio mirroring, and clean mobile HUD.
 // @match        https://discord.com/*
 // @grant        none
 // @license      MIT
@@ -20,15 +20,13 @@
     let pannerNode = null;
     let persistentMerger = null;
     let destinationNode = null;
-    let currentGain = 50.0;
+    let currentGain = 1.0;
     let currentPan = 0.0;
     let highpassEnabled = true;
     let widerStereoEnabled = false;
-    
-    // Mutable audio mirroring flag as requested
     let audioMirroringEnabled = true;
 
-    // Force unlock audio context on mobile web touch events
+    // Force unlock audio context on mobile web touch events to bypass browser autoplay blocks
     const unlockAudio = () => {
         if (audioCtx && audioCtx.state === 'suspended') {
             audioCtx.resume();
@@ -37,11 +35,11 @@
     window.addEventListener('touchstart', unlockAudio, { passive: true });
     window.addEventListener('click', unlockAudio, { passive: true });
 
-    // Intercept getUserMedia and strip 100% of Chromium/WebRTC audio processing flags
+    // Intercept getUserMedia: Keep googAudioMirroring true, strip all other DSP interference flags
     const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async (constraints) => {
         if (constraints?.audio) {
-            const strippedAudioSettings = {
+            const apoAudioSettings = {
                 echoCancellation: false,
                 googEchoCancellation: false,
                 googEchoCancellation2: false,
@@ -55,13 +53,14 @@
                 googNullishAudioProcessing: false,
                 googExperimentalNoiseSuppression: false,
                 googExperimentalEchoCancellation: false,
+                googAudioMirroring: audioMirroringEnabled,
                 channelCount: { ideal: 2 },
                 sampleRate: { ideal: 48000 }
             };
 
             constraints.audio = typeof constraints.audio === 'object'
-                ? { ...constraints.audio, ...strippedAudioSettings }
-                : strippedAudioSettings;
+                ? { ...constraints.audio, ...apoAudioSettings }
+                : apoAudioSettings;
         }
 
         const stream = await originalGetUserMedia(constraints);
@@ -81,7 +80,7 @@
             persistentMerger = audioCtx.createChannelMerger(2);
             destinationNode = audioCtx.createMediaStreamDestination();
 
-            // Highpass Filters (430Hz, Q: 0.3333)
+            // Highpass Filters (430Hz crisp punch, Q: 0.3333)
             leftHp = audioCtx.createBiquadFilter();
             leftHp.type = 'highpass';
             leftHp.frequency.value = highpassEnabled ? 430 : 1;
@@ -92,7 +91,7 @@
             rightHp.frequency.value = highpassEnabled ? 430 : 1;
             rightHp.Q.value = 0.3333;
 
-            // Gain Nodes
+            // Gain Nodes (Up to 20,000x Amplification)
             leftGain = audioCtx.createGain();
             leftGain.gain.value = currentGain;
 
@@ -108,7 +107,6 @@
 
             source.connect(splitter);
 
-            // Audio Mirroring Cross-Routing based on mutable flag
             if (audioMirroringEnabled) {
                 splitter.connect(leftHp, 1);
                 splitter.connect(rightHp, 0);
@@ -140,11 +138,12 @@
             if (pannerNode) pannerNode.disconnect();
         } catch (e) {}
 
+        // Polyverse Wider Stereo Simulation Matrix (Cross-feed phase expansion)
         if (widerStereoEnabled) {
             const leftWideGain = audioCtx.createGain();
             const rightWideGain = audioCtx.createGain();
-            leftWideGain.gain.value = 0.35;
-            rightWideGain.gain.value = 0.35;
+            leftWideGain.gain.value = 0.40;
+            rightWideGain.gain.value = 0.40;
 
             leftGain.connect(persistentMerger, 0, 0);
             rightGain.connect(persistentMerger, 0, 1);
@@ -232,91 +231,300 @@
         return origSetRemoteDescription.apply(this, arguments);
     };
 
-    // Mobile View Floating Trigger & HUD UI Control Panel
-    const createHUD = () => {
-        if (document.getElementById('dah-trigger')) return;
+    // EQ-APO Style Audio Controller UI Injection (Starts Opened, Top-Right Minimize)
+    const createUI = () => {
+        if (document.getElementById('discord-audio-hud')) return;
 
-        const btn = document.createElement('button');
-        btn.id = 'dah-trigger';
-        btn.innerHTML = '🎙️ LOUD';
-        btn.style.cssText = `
-            position: fixed !important; bottom: 70px !important; right: 12px !important;
-            background: #5865F2 !important; color: white !important; border: 2px solid white !important;
-            border-radius: 24px !important; padding: 10px 14px !important; font-weight: bold !important;
-            font-size: 13px !important; z-index: 2147483647 !important; box-shadow: 0 4px 12px rgba(0,0,0,0.6) !important;
+        const container = document.createElement('div');
+        container.id = 'discord-audio-hud';
+        container.innerHTML = `
+            <div id="dah-header">
+                <span>🎛️ EQ-APO STEREO RACK</span>
+                <button id="dah-minimize" aria-label="Minimize HUD">-</button>
+            </div>
+            <div id="dah-body">
+                <div class="dah-section">
+                    <div class="dah-row-between">
+                        <label for="dah-gain-text">Gain Boost (Stereo)</label>
+                        <input type="text" id="dah-gain-text" value="1" inputmode="decimal">
+                    </div>
+                    <input type="range" id="dah-gain-range" min="1" max="20000" step="10" value="1">
+                    <div class="dah-presets">
+                        <button class="dah-preset-btn active" data-val="1">1x</button>
+                        <button class="dah-preset-btn" data-val="100">100x</button>
+                        <button class="dah-preset-btn" data-val="1000">1k</button>
+                        <button class="dah-preset-btn" data-val="5000">5k</button>
+                        <button class="dah-preset-btn" data-val="10000">10k</button>
+                        <button class="dah-preset-btn" data-val="20000">20k</button>
+                    </div>
+                </div>
+
+                <div class="dah-section">
+                    <div class="dah-row-between">
+                        <label for="dah-hp-toggle">430Hz Highpass Filter</label>
+                        <input type="checkbox" id="dah-hp-toggle" checked>
+                    </div>
+                </div>
+
+                <div class="dah-section">
+                    <div class="dah-row-between">
+                        <label for="dah-mirror-toggle">Audio Mirroring</label>
+                        <input type="checkbox" id="dah-mirror-toggle" checked>
+                    </div>
+                </div>
+
+                <div class="dah-section">
+                    <div class="dah-row-between">
+                        <label for="dah-wider-toggle">Polyverse Wider Effect</label>
+                        <input type="checkbox" id="dah-wider-toggle">
+                    </div>
+                </div>
+
+                <div class="dah-section">
+                    <div class="dah-row-between">
+                        <label for="dah-pan-range">Stereo Balance Pan</label>
+                        <span id="dah-pan-val">0.00</span>
+                    </div>
+                    <input type="range" id="dah-pan-range" min="-1" max="1" step="0.05" value="0">
+                </div>
+
+                <button id="dah-reset">RESET DEFAULTS</button>
+            </div>
         `;
 
-        const panel = document.createElement('div');
-        panel.id = 'dah-panel';
-        panel.style.cssText = `
-            position: fixed !important; top: 50% !important; left: 50% !important; transform: translate(-50%, -50%) !important;
-            background: #18191c !important; border: 2px solid #5865F2 !important; border-radius: 12px !important;
-            padding: 16px !important; color: white !important; z-index: 2147483647 !important; display: none;
-            width: 290px !important; font-family: sans-serif !important; box-shadow: 0 10px 30px rgba(0,0,0,0.8) !important;
+        const style = document.createElement('style');
+        style.innerHTML = `
+            #discord-audio-hud {
+                position: fixed !important;
+                bottom: 16px !important;
+                right: 12px !important;
+                width: 315px !important;
+                max-width: 92vw !important;
+                background: #12141c !important;
+                border: 1.5px solid #202225 !important;
+                border-top: 3px solid #5865F2 !important;
+                border-radius: 10px !important;
+                color: #e3e5e8 !important;
+                font-family: Consolas, monaco, monospace, system-ui, sans-serif !important;
+                z-index: 2147483647 !important;
+                box-shadow: 0 12px 35px rgba(0, 0, 0, 0.95) !important;
+                overflow: hidden !important;
+            }
+            #dah-header {
+                background: #1a1c23 !important;
+                padding: 10px 12px !important;
+                font-weight: bold !important;
+                font-size: 12px !important;
+                letter-spacing: 0.5px;
+                color: #ffffff !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                border-bottom: 1px solid #2f3136 !important;
+            }
+            #dah-minimize {
+                background: #2f3136 !important;
+                border: 1px solid #4f545c !important;
+                color: white !important;
+                width: 24px !important;
+                height: 24px !important;
+                border-radius: 4px !important;
+                font-weight: bold !important;
+                font-size: 14px !important;
+                cursor: pointer !important;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            #dah-body {
+                padding: 10px !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 8px !important;
+                max-height: 72vh !important;
+                overflow-y: auto !important;
+                background: #12141c !important;
+            }
+            .dah-section {
+                background: #181a22 !important;
+                border: 1px solid #282b33 !important;
+                border-radius: 6px !important;
+                padding: 8px 10px !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 6px !important;
+            }
+            .dah-row-between {
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                font-size: 11px !important;
+                font-weight: bold !important;
+                color: #b9bbbe !important;
+            }
+            input[type="range"] {
+                width: 100% !important;
+                height: 6px !important;
+                background: #2f3136 !important;
+                border-radius: 3px !important;
+                accent-color: #5865F2 !important;
+                outline: none !important;
+            }
+            #dah-gain-text {
+                width: 60px !important;
+                background: #0b0c10 !important;
+                border: 1px solid #4f545c !important;
+                color: #00ffcc !important;
+                text-align: center !important;
+                border-radius: 4px !important;
+                padding: 3px !important;
+                font-size: 12px !important;
+                font-weight: bold !important;
+            }
+            .dah-presets {
+                display: grid !important;
+                grid-template-columns: repeat(6, 1fr) !important;
+                gap: 3px !important;
+                margin-top: 2px;
+            }
+            .dah-preset-btn {
+                background: #202225 !important;
+                border: 1px solid #36393f !important;
+                color: #b9bbbe !important;
+                padding: 5px 0 !important;
+                font-size: 9px !important;
+                font-weight: bold !important;
+                border-radius: 4px !important;
+                cursor: pointer !important;
+            }
+            .dah-preset-btn.active {
+                background: #5865F2 !important;
+                color: white !important;
+                border-color: #7983f5 !important;
+            }
+            input[type="checkbox"] {
+                width: 18px !important;
+                height: 18px !important;
+                accent-color: #5865F2 !important;
+                cursor: pointer !important;
+            }
+            #dah-reset {
+                background: #ed4245 !important;
+                color: white !important;
+                border: none !important;
+                padding: 8px !important;
+                border-radius: 6px !important;
+                font-weight: bold !important;
+                font-size: 11px !important;
+                cursor: pointer !important;
+                letter-spacing: 0.5px;
+            }
+            .minimized #dah-body {
+                display: none !important;
+            }
         `;
-        panel.innerHTML = `
-            <div style="font-weight:bold; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
-                <span>Mobile Stereo Loudmic HUD</span>
-                <button id="dah-close" style="background:none; border:none; color:white; font-size:16px; font-weight:bold;">✕</button>
-            </div>
-            
-            <label style="font-size:12px;">Gain Boost: <span id="dah-val">50</span>x</label>
-            <input type="range" id="dah-range" min="1" max="20000" step="10" value="50" style="width:100%; margin:6px 0 12px 0;">
-            
-            <div style="margin-bottom:10px; font-size:12px; display:flex; justify-content:space-between; align-items:center;">
-                <label for="dah-mirror-toggle">Audio Mirroring</label>
-                <input type="checkbox" id="dah-mirror-toggle" checked style="width:20px; height:20px;">
-            </div>
 
-            <div style="margin-bottom:12px; font-size:12px; display:flex; justify-content:space-between; align-items:center;">
-                <label for="dah-wider-toggle">Wider Stereo Mode</label>
-                <input type="checkbox" id="dah-wider-toggle" style="width:20px; height:20px;">
-            </div>
+        const targetNode = document.body || document.documentElement;
+        if (targetNode) {
+            document.head.appendChild(style);
+            targetNode.appendChild(container);
+        }
 
-            <button id="dah-restart" style="width:100%; background:#ed4245; color:white; border:none; padding:10px; border-radius:6px; font-weight:bold;">Reset Audio Context</button>
-        `;
-
-        document.body.appendChild(btn);
-        document.body.appendChild(panel);
-
-        btn.onclick = () => panel.style.display = 'block';
-        document.getElementById('dah-close').onclick = () => panel.style.display = 'none';
-
-        const range = document.getElementById('dah-range');
-        const valLabel = document.getElementById('dah-val');
+        const gainRange = document.getElementById('dah-gain-range');
+        const gainText = document.getElementById('dah-gain-text');
+        const panRange = document.getElementById('dah-pan-range');
+        const panVal = document.getElementById('dah-pan-val');
+        const hpToggle = document.getElementById('dah-hp-toggle');
         const mirrorToggle = document.getElementById('dah-mirror-toggle');
         const widerToggle = document.getElementById('dah-wider-toggle');
+        const resetBtn = document.getElementById('dah-reset');
+        const minimizeBtn = document.getElementById('dah-minimize');
+        const hud = document.getElementById('discord-audio-hud');
+        const presetBtns = document.querySelectorAll('.dah-preset-btn');
 
-        range.oninput = (e) => {
-            currentGain = parseFloat(e.target.value);
-            valLabel.innerText = currentGain;
-            if (leftGain && rightGain && audioCtx) {
-                leftGain.gain.setTargetAtTime(currentGain, audioCtx.currentTime, 0.01);
-                rightGain.gain.setTargetAtTime(currentGain, audioCtx.currentTime, 0.01);
+        const updateGain = (val) => {
+            let num = parseFloat(val);
+            if (isNaN(num)) num = 1.0;
+            num = Math.max(1, Math.min(20000, num));
+
+            currentGain = num;
+            gainRange.value = num;
+            gainText.value = num;
+
+            if (audioCtx) {
+                leftGain?.gain.setTargetAtTime(currentGain, audioCtx.currentTime, 0.01);
+                rightGain?.gain.setTargetAtTime(currentGain, audioCtx.currentTime, 0.01);
+            }
+
+            presetBtns.forEach(btn => {
+                if (parseInt(btn.getAttribute('data-val'), 10) === num) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        };
+
+        const updatePan = (val) => {
+            currentPan = parseFloat(val);
+            panRange.value = currentPan;
+            panVal.innerText = currentPan.toFixed(2);
+
+            if (pannerNode?.pan && audioCtx) {
+                pannerNode.pan.setTargetAtTime(currentPan, audioCtx.currentTime, 0.01);
             }
         };
 
-        mirrorToggle.onchange = (e) => {
-            audioMirroringEnabled = e.target.checked;
-        };
+        gainRange.addEventListener('input', (e) => updateGain(e.target.value));
+        gainText.addEventListener('change', (e) => updateGain(e.target.value));
+        panRange.addEventListener('input', (e) => updatePan(e.target.value));
+        
+        hpToggle.addEventListener('change', (e) => {
+            highpassEnabled = e.target.checked;
+            if (audioCtx) {
+                const targetFreq = highpassEnabled ? 430 : 1;
+                leftHp?.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.01);
+                rightHp?.frequency.setTargetAtTime(targetFreq, audioCtx.currentTime, 0.01);
+            }
+        });
 
-        widerToggle.onchange = (e) => {
+        mirrorToggle.addEventListener('change', (e) => {
+            audioMirroringEnabled = e.target.checked;
+        });
+
+        widerToggle.addEventListener('change', (e) => {
             widerStereoEnabled = e.target.checked;
             updateRoutingGraph();
-        };
+        });
 
-        document.getElementById('dah-restart').onclick = () => {
-            if (audioCtx) {
-                audioCtx.close();
-                audioCtx = null;
-                alert("Audio context reset! Re-join your voice channel.");
-            }
-        };
+        presetBtns.forEach(btn => {
+            btn.addEventListener('click', () => updateGain(btn.getAttribute('data-val')));
+        });
+
+        resetBtn.addEventListener('click', () => {
+            updateGain(1.0);
+            updatePan(0.0);
+            hpToggle.checked = true;
+            highpassEnabled = true;
+            mirrorToggle.checked = true;
+            audioMirroringEnabled = true;
+            widerToggle.checked = false;
+            widerStereoEnabled = false;
+            updateRoutingGraph();
+        });
+
+        let minimized = false;
+        minimizeBtn.addEventListener('click', () => {
+            minimized = !minimized;
+            hud.classList.toggle('minimized', minimized);
+            minimizeBtn.innerText = minimized ? '+' : '-';
+        });
     };
 
+    // Watchdog mutation observer to maintain injection across Discord mobile view router changes
     const observer = new MutationObserver(() => {
-        if (!document.getElementById('dah-trigger') && document.body) {
-            createHUD();
+        if (!document.getElementById('discord-audio-hud') && document.body) {
+            createUI();
         }
     });
     observer.observe(document, { childList: true, subtree: true });
