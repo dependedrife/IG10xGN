@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Discord Mobile Web - True Wide Stereo, 20000x Gain, 430Hz Filter & Frozen Max Opus
+// @name         Discord Mobile Web - True Wide Stereo & Loudmic HUD (Android Fix)
 // @namespace    http://tampermonkey.net/
-// @version      14.2
-// @description  Ultimate Android Chromium touchscreen-optimized loudmic script featuring forced audio mirroring, wider stereo processing, 20000x gain, 430Hz HPF, and frozen 384kbps CBR Opus override.
+// @version      15.0
+// @description  Android Chromium touchscreen-optimized loudmic with explicit UI injection fixes and forced AudioContext unlock.
 // @match        https://discord.com/*
 // @grant        none
 // @license      MIT
@@ -19,13 +19,23 @@
     let rightHp = null;
     let pannerNode = null;
     let persistentMerger = null;
+    let destinationNode = null;
     let currentGain = 1.0;
     let currentPan = 0.0;
     let highpassEnabled = true;
     let widerStereoEnabled = false;
     const audioMirroringEnabled = true;
 
-    // 1. Intercept getUserMedia: Ideal 2-channel stereo capture, strip all Chromium DSP constraints
+    // 1. Force Resume AudioContext on Any User Touch
+    const unlockAudioContext = () => {
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    };
+    window.addEventListener('touchstart', unlockAudioContext, { passive: true });
+    window.addEventListener('click', unlockAudioContext, { passive: true });
+
+    // 2. Intercept getUserMedia: Ideal 2-channel stereo capture & strip Chromium DSP constraints
     const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getUserMedia = async (constraints) => {
         if (constraints?.audio) {
@@ -57,7 +67,7 @@
         try {
             stream.getAudioTracks().forEach(track => { track.enabled = true; });
 
-            if (!audioCtx) {
+            if (!audioCtx || audioCtx.state === 'closed') {
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000 });
             }
             if (audioCtx.state === 'suspended') {
@@ -67,8 +77,8 @@
             const source = audioCtx.createMediaStreamSource(stream);
             const splitter = audioCtx.createChannelSplitter(2);
             persistentMerger = audioCtx.createChannelMerger(2);
+            destinationNode = audioCtx.createMediaStreamDestination();
 
-            // Left & Right Highpass Filters (430Hz, Q: 0.3333 for maximum crisp punch)
             leftHp = audioCtx.createBiquadFilter();
             leftHp.type = 'highpass';
             leftHp.frequency.value = highpassEnabled ? 430 : 1;
@@ -79,14 +89,12 @@
             rightHp.frequency.value = highpassEnabled ? 430 : 1;
             rightHp.Q.value = 0.3333;
 
-            // Left & Right Gain Nodes (Up to 20,000x Amplification)
             leftGain = audioCtx.createGain();
             leftGain.gain.value = currentGain;
 
             rightGain = audioCtx.createGain();
             rightGain.gain.value = currentGain;
 
-            // Stereo Panner Setup (Fall back safely if unsupported)
             if (typeof audioCtx.createStereoPanner === 'function') {
                 pannerNode = audioCtx.createStereoPanner();
                 pannerNode.pan.value = currentPan;
@@ -94,11 +102,8 @@
                 pannerNode = null;
             }
 
-            const destination = audioCtx.createMediaStreamDestination();
-
             source.connect(splitter);
 
-            // Forced Audio Mirroring Cross-Routing
             if (audioMirroringEnabled) {
                 splitter.connect(leftHp, 1);
                 splitter.connect(rightHp, 0);
@@ -110,39 +115,29 @@
             leftHp.connect(leftGain);
             rightHp.connect(rightGain);
 
-            updateRoutingGraph(destination);
+            updateRoutingGraph();
 
-            // Keep AudioContext alive in background tabs/browsers
-            setInterval(() => {
-                if (audioCtx?.state === 'suspended') {
-                    audioCtx.resume();
-                }
-            }, 2000);
-
-            destination.stream.getAudioTracks().forEach(t => { t.enabled = true; });
-            return destination.stream;
+            destinationNode.stream.getAudioTracks().forEach(t => { t.enabled = true; });
+            return destinationNode.stream;
         } catch (e) {
             console.error("Stereo audio pipeline routing failed:", e);
             return stream;
         }
     };
 
-    const updateRoutingGraph = (destOverride = null) => {
-        if (!leftGain || !rightGain || !persistentMerger || !audioCtx) return;
+    const updateRoutingGraph = () => {
+        if (!leftGain || !rightGain || !persistentMerger || !audioCtx || !destinationNode) return;
 
         try {
             leftGain.disconnect();
             rightGain.disconnect();
             persistentMerger.disconnect();
-            if (pannerNode) {
-                pannerNode.disconnect();
-            }
+            if (pannerNode) pannerNode.disconnect();
         } catch (e) {}
 
-        const leftWideGain = widerStereoEnabled ? audioCtx.createGain() : null;
-        const rightWideGain = widerStereoEnabled ? audioCtx.createGain() : null;
-
-        if (widerStereoEnabled && leftWideGain && rightWideGain) {
+        if (widerStereoEnabled) {
+            const leftWideGain = audioCtx.createGain();
+            const rightWideGain = audioCtx.createGain();
             leftWideGain.gain.value = 0.35;
             rightWideGain.gain.value = 0.35;
 
@@ -159,18 +154,15 @@
             rightGain.connect(persistentMerger, 0, 1);
         }
 
-        // Target stream destination resolution
-        const finalDest = destOverride || audioCtx.createMediaStreamDestination();
-
         if (pannerNode) {
             persistentMerger.connect(pannerNode);
-            pannerNode.connect(finalDest);
+            pannerNode.connect(destinationNode);
         } else {
-            persistentMerger.connect(finalDest);
+            persistentMerger.connect(destinationNode);
         }
     };
 
-    // 2. Frozen Max Opus Parameters Config Object & SDP Interception
+    // 3. Frozen Max Opus SDP Overrides
     const FROZEN_OPUS_SPECS = Object.freeze({
         maxaveragebitrate: 384000,
         stereo: 1,
@@ -186,7 +178,8 @@
         .join('; ');
 
     const modifySdpOpus = (sdp) => {
-        if (!sdp || typeof sdp !== 'string') return sdp;
+        if (typeof sdp !== 'string') return sdp;
+
         const lines = sdp.split('\r\n');
         let updatedLines = [];
         let opusPayload = null;
@@ -208,7 +201,7 @@
             updatedLines.push(line);
         }
 
-        if (opusPayload && !updatedLines.some(l => l.startsWith(`a=fmtp:${opusPayload} `))) {
+        if (opusPayload && !updatedLines.some(l => l.startsWith(`a=fmtp:${opusPayload}`))) {
             const rtpmapIndex = updatedLines.findIndex(l => l.startsWith(`a=rtpmap:${opusPayload}`));
             if (rtpmapIndex !== -1) {
                 updatedLines.splice(rtpmapIndex + 1, 0, `a=fmtp:${opusPayload} ${frozenFmtpParams}`);
@@ -218,33 +211,28 @@
         return updatedLines.join('\r\n');
     };
 
-    if (typeof RTCPeerConnection !== 'undefined') {
-        const origSetLocalDescription = RTCPeerConnection.prototype.setLocalDescription;
-        RTCPeerConnection.prototype.setLocalDescription = function (sessionDescription) {
-            if (sessionDescription?.sdp) {
-                sessionDescription.sdp = modifySdpOpus(sessionDescription.sdp);
-            }
-            return origSetLocalDescription.apply(this, arguments);
-        };
+    const origSetLocalDescription = RTCPeerConnection.prototype.setLocalDescription;
+    RTCPeerConnection.prototype.setLocalDescription = function (sessionDescription) {
+        if (sessionDescription?.sdp) {
+            sessionDescription.sdp = modifySdpOpus(sessionDescription.sdp);
+        }
+        return origSetLocalDescription.apply(this, arguments);
+    };
 
-        const origSetRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription;
-        RTCPeerConnection.prototype.setRemoteDescription = function (sessionDescription) {
-            if (sessionDescription?.sdp) {
-                sessionDescription.sdp = modifySdpOpus(sessionDescription.sdp);
-            }
-            return origSetRemoteDescription.apply(this, arguments);
-        };
-    }
+    const origSetRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription;
+    RTCPeerConnection.prototype.setRemoteDescription = function (sessionDescription) {
+        if (sessionDescription?.sdp) {
+            sessionDescription.sdp = modifySdpOpus(sessionDescription.sdp);
+        }
+        return origSetRemoteDescription.apply(this, arguments);
+    };
 
-    // 3. Inject Touch-Optimized Mobile Floating Control HUD UI
-    if (document.readyState === 'loading') {
-        window.addEventListener('DOMContentLoaded', createUI);
-    } else {
-        createUI();
-    }
-
-    function createUI() {
+    // 4. Reliable Mobile Injection & HUD Creation
+    const createUI = () => {
         if (document.getElementById('discord-audio-hud')) return;
+
+        const targetNode = document.body || document.documentElement;
+        if (!targetNode) return;
 
         const container = document.createElement('div');
         container.id = 'discord-audio-hud';
@@ -254,7 +242,6 @@
                 <button id="dah-minimize" aria-label="Minimize HUD">_</button>
             </div>
             <div id="dah-body">
-                <!-- Gain Boost Section -->
                 <div class="dah-section">
                     <div class="dah-row-between">
                         <label for="dah-gain-range">Gain Boost</label>
@@ -271,7 +258,6 @@
                     </div>
                 </div>
 
-                <!-- 430Hz Filter Toggle -->
                 <div class="dah-section">
                     <div class="dah-row-between">
                         <label for="dah-hp-toggle">430Hz Highpass (Q: 0.33)</label>
@@ -279,7 +265,6 @@
                     </div>
                 </div>
 
-                <!-- Wider Stereo Mode Toggle -->
                 <div class="dah-section">
                     <div class="dah-row-between">
                         <label for="dah-wider-toggle">Wider Stereo Mode</label>
@@ -287,7 +272,6 @@
                     </div>
                 </div>
 
-                <!-- Stereo Pan Section -->
                 <div class="dah-section">
                     <div class="dah-row-between">
                         <label for="dah-pan-range">Output Balance</label>
@@ -303,159 +287,106 @@
         const style = document.createElement('style');
         style.innerHTML = `
             #discord-audio-hud {
-                position: fixed;
-                top: 50px;
-                right: 12px;
-                width: 320px;
-                max-width: 92vw;
-                background: rgba(18, 20, 28, 0.95);
-                border: 1.5px solid rgba(88, 101, 242, 0.7);
-                border-radius: 16px;
-                color: #ffffff;
-                font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                z-index: 999999;
-                box-shadow: 0 12px 36px rgba(0, 0, 0, 0.85);
-                backdrop-filter: blur(16px);
-                -webkit-backdrop-filter: blur(16px);
-                user-select: none;
-                touch-action: none;
-                overflow: hidden;
+                position: fixed !important;
+                top: 60px !important;
+                right: 12px !important;
+                width: 310px !important;
+                max-width: 90vw !important;
+                background: rgba(18, 20, 28, 0.98) !important;
+                border: 2px solid #5865F2 !important;
+                border-radius: 16px !important;
+                color: #ffffff !important;
+                font-family: system-ui, -apple-system, sans-serif !important;
+                z-index: 2147483647 !important;
+                box-shadow: 0 12px 36px rgba(0, 0, 0, 0.9) !important;
+                touch-action: none !important;
+                overflow: hidden !important;
             }
             #dah-header {
-                background: linear-gradient(135deg, #5865F2, #4752C4);
-                padding: 14px 16px;
-                font-weight: 700;
-                font-size: 14px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                cursor: grab;
-                touch-action: none;
-            }
-            #dah-header:active {
-                cursor: grabbing;
+                background: #5865F2 !important;
+                padding: 12px 14px !important;
+                font-weight: bold !important;
+                font-size: 13px !important;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
             }
             #dah-minimize {
-                background: rgba(0, 0, 0, 0.25);
-                border: none;
-                color: white;
-                font-size: 16px;
-                font-weight: bold;
-                width: 36px;
-                height: 36px;
-                border-radius: 8px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                cursor: pointer;
+                background: rgba(0, 0, 0, 0.3) !important;
+                border: none !important;
+                color: white !important;
+                width: 32px !important;
+                height: 32px !important;
+                border-radius: 8px !important;
+                font-weight: bold !important;
             }
             #dah-body {
-                padding: 14px;
-                display: flex;
-                flex-direction: column;
-                gap: 12px;
-                max-height: 72vh;
-                overflow-y: auto;
-                -webkit-overflow-scrolling: touch;
-                touch-action: pan-y;
+                padding: 12px !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 10px !important;
+                max-height: 70vh !important;
+                overflow-y: auto !important;
+                touch-action: pan-y !important;
             }
             .dah-section {
-                background: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
-                padding: 12px;
-                display: flex;
-                flex-direction: column;
-                gap: 10px;
+                background: rgba(255, 255, 255, 0.05) !important;
+                border-radius: 10px !important;
+                padding: 10px !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 8px !important;
             }
             .dah-row-between {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                font-size: 13px;
-                font-weight: 600;
-                color: #e3e5e8;
+                display: flex !important;
+                justify-content: space-between !important;
+                align-items: center !important;
+                font-size: 12px !important;
             }
             input[type="range"] {
-                -webkit-appearance: none;
-                width: 100%;
-                height: 12px;
-                background: #2f3136;
-                border-radius: 6px;
-                outline: none;
-                margin: 6px 0;
-            }
-            input[type="range"]::-webkit-slider-thumb {
-                -webkit-appearance: none;
-                appearance: none;
-                width: 28px;
-                height: 28px;
-                border-radius: 50%;
-                background: #5865F2;
-                cursor: pointer;
-                box-shadow: 0 0 8px rgba(88, 101, 242, 0.9);
+                width: 100% !important;
+                height: 10px !important;
             }
             #dah-gain-text {
-                width: 70px;
-                background: #202225;
-                border: 1px solid #5865F2;
-                color: #fff;
-                text-align: center;
-                border-radius: 8px;
-                padding: 6px;
-                font-size: 14px;
-                font-weight: bold;
-                outline: none;
+                width: 65px !important;
+                background: #202225 !important;
+                border: 1px solid #5865F2 !important;
+                color: #fff !important;
+                text-align: center !important;
+                border-radius: 6px !important;
+                padding: 4px !important;
             }
             .dah-presets {
-                display: grid;
-                grid-template-columns: repeat(6, 1fr);
-                gap: 6px;
-                margin-top: 4px;
+                display: grid !important;
+                grid-template-columns: repeat(6, 1fr) !important;
+                gap: 4px !important;
             }
             .dah-preset-btn {
-                background: #2f3136;
-                border: 1px solid #4f545c;
-                color: #dcddde;
-                padding: 10px 0;
-                font-size: 11px;
-                font-weight: bold;
-                border-radius: 6px;
-                cursor: pointer;
-                text-align: center;
-                min-height: 38px;
+                background: #2f3136 !important;
+                border: 1px solid #4f545c !important;
+                color: #fff !important;
+                padding: 8px 0 !important;
+                font-size: 10px !important;
+                border-radius: 6px !important;
             }
             .dah-preset-btn.active {
-                background: #5865F2;
-                color: white;
-                border-color: #7983f5;
-            }
-            input[type="checkbox"] {
-                width: 24px;
-                height: 24px;
-                accent-color: #5865F2;
-                cursor: pointer;
+                background: #5865F2 !important;
             }
             #dah-reset {
-                background: #ed4245;
-                color: white;
-                border: none;
-                padding: 12px;
-                border-radius: 10px;
-                font-weight: bold;
-                font-size: 13px;
-                cursor: pointer;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                min-height: 44px;
+                background: #ed4245 !important;
+                color: white !important;
+                border: none !important;
+                padding: 10px !important;
+                border-radius: 8px !important;
+                font-weight: bold !important;
             }
             .minimized #dah-body {
-                display: none;
+                display: none !important;
             }
         `;
 
-        document.head.appendChild(style);
-        document.body.appendChild(container);
+        document.head ? document.head.appendChild(style) : targetNode.appendChild(style);
+        targetNode.appendChild(container);
 
         const gainRange = document.getElementById('dah-gain-range');
         const gainText = document.getElementById('dah-gain-text');
@@ -541,6 +472,7 @@
             minimizeBtn.innerText = minimized ? '+' : '_';
         });
 
+        // Touch Drag Logic for Mobile Header
         let isDragging = false, startX = 0, startY = 0, initialX = 0, initialY = 0;
         const header = document.getElementById('dah-header');
 
@@ -565,5 +497,15 @@
         window.addEventListener('touchend', () => { isDragging = false; });
 
         updateGain(1.0);
-    }
+    };
+
+    // Continuous check loop to ensure UI injects even if document body mounts late
+    const tryInject = () => {
+        if (!document.getElementById('discord-audio-hud') && (document.body || document.documentElement)) {
+            createUI();
+        }
+    };
+
+    setInterval(tryInject, 500);
+    document.addEventListener('DOMContentLoaded', tryInject);
 })();
