@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Discord Mobile Web - True Wide Stereo, 20000x Gain, 430Hz Filter & Frozen Max Opus
 // @namespace    http://tampermonkey.net/
-// @version      14.0
+// @version      14.1
 // @description  Ultimate Android Chromium touchscreen-optimized loudmic script featuring forced audio mirroring, wider stereo processing, 20000x gain, 430Hz HPF, and frozen 384kbps CBR Opus override.
 // @match        https://discord.com/*
 // @grant        none
@@ -18,6 +18,7 @@
     let leftHp = null;
     let rightHp = null;
     let pannerNode = null;
+    let persistentMerger = null;
     let currentGain = 1.0;
     let currentPan = 0.0;
     let highpassEnabled = true;
@@ -65,7 +66,7 @@
 
             const source = audioCtx.createMediaStreamSource(stream);
             const splitter = audioCtx.createChannelSplitter(2);
-            const merger = audioCtx.createChannelMerger(2);
+            persistentMerger = audioCtx.createChannelMerger(2);
 
             // Left & Right Highpass Filters (430Hz, Q: 0.3333 for maximum crisp punch)
             leftHp = audioCtx.createBiquadFilter();
@@ -107,7 +108,7 @@
             leftHp.connect(leftGain);
             rightHp.connect(rightGain);
 
-            updateRoutingGraph(merger);
+            updateRoutingGraph();
 
             // Keep AudioContext alive in background tabs/browsers
             setInterval(() => {
@@ -124,12 +125,13 @@
         }
     };
 
-    const updateRoutingGraph = (merger) => {
-        if (!leftGain || !rightGain || !pannerNode) return;
+    const updateRoutingGraph = () => {
+        if (!leftGain || !rightGain || !persistentMerger || !audioCtx) return;
 
         try {
             leftGain.disconnect();
             rightGain.disconnect();
+            persistentMerger.disconnect();
         } catch (e) {}
 
         if (widerStereoEnabled) {
@@ -138,22 +140,24 @@
             leftWideGain.gain.value = 0.35;
             rightWideGain.gain.value = 0.35;
 
-            leftGain.connect(merger, 0, 0);
-            rightGain.connect(merger, 0, 1);
+            leftGain.connect(persistentMerger, 0, 0);
+            rightGain.connect(persistentMerger, 0, 1);
 
             leftGain.connect(rightWideGain);
-            rightWideGain.connect(merger, 0, 1);
+            rightWideGain.connect(persistentMerger, 0, 1);
 
             rightGain.connect(leftWideGain);
-            leftWideGain.connect(merger, 0, 0);
+            leftWideGain.connect(persistentMerger, 0, 0);
         } else {
-            leftGain.connect(merger, 0, 0);
-            rightGain.connect(merger, 0, 1);
+            leftGain.connect(persistentMerger, 0, 0);
+            rightGain.connect(persistentMerger, 0, 1);
         }
 
-        merger.connect(pannerNode);
-        if (audioCtx.createStereoPanner) {
-            pannerNode.connect(audioCtx.createMediaStreamDestination());
+        if (pannerNode) {
+            persistentMerger.connect(pannerNode);
+            if (audioCtx.createStereoPanner) {
+                pannerNode.connect(audioCtx.createMediaStreamDestination());
+            }
         }
     };
 
@@ -494,10 +498,7 @@
 
         const updateWiderStereo = (enabled) => {
             widerStereoEnabled = enabled;
-            if (audioCtx) {
-                const merger = audioCtx.createChannelMerger(2);
-                updateRoutingGraph(merger);
-            }
+            updateRoutingGraph();
         };
 
         gainRange.addEventListener('input', (e) => updateGain(e.target.value));
