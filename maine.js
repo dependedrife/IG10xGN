@@ -29,7 +29,7 @@
     let currentPan = 0.0;
     let highpassEnabled = false;        // Default off for normal clean raw input
     let widerStereoEnabled = false;     // Default off
-    let audioMirroringEnabled = false;  // Default off for standard non-mirrored stereo
+    let audioMirroringEnabled = true;  // Default off for standard non-mirrored stereo
 
     // Force unlock audio context on mobile web touch events to bypass browser autoplay blocks
     const unlockAudio = () => {
