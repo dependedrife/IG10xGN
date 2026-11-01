@@ -531,7 +531,7 @@
             hpToggle.checked = false;
             highpassEnabled = false;
             mirrorToggle.checked = false;
-            audioMirroringEnabled = false;
+            audioMirroringEnabled = true;
             widerToggle.checked = false;
             widerStereoEnabled = false;
             updateRoutingGraph();
