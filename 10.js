@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Mic 10x Gain Booster
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @match        *://*/*
+// @exclude      *://*.discord.com/*
 // @author       marse
 // @run-at       document-start
 // @grant        none
