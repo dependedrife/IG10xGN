@@ -1,8 +1,10 @@
 // ==UserScript==
-// @name         WebRTC Ultimate Opus Max Spec Enforcer
+// @name         Instagram WebRTC Ultimate Max Fidelity Enforcer
 // @namespace    http://tampermonkey.net/
-// @version      4.0
-// @match        https://*.instagram.com/*
+// @version      6.0
+// @description  Symmetrically forces maximum uncompressed H.264 video (20Mbps, Level 5.1) and full-blast Opus audio (510kbps CBR, Stereo, No DTX/FEC, 48kHz) inbound and outbound.
+// @author       marse
+// @match        https://www.instagram.com/*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
@@ -10,114 +12,51 @@
 (function() {
     'use strict';
 
-    // 1. Force max constraints on media creation
-    const overrideMediaConstraints = (constraints) => {
-        if (!constraints) return constraints;
-        if (constraints.video) {
-            if (typeof constraints.video === 'object') {
-                constraints.video.frameRate = { ideal: 60, max: 60 };
-                constraints.video.width = { ideal: 1920 };
-                constraints.video.height = { ideal: 1080 };
-                constraints.video.contentHint = 'motion';
-            }
-        }
-        return constraints;
-    };
+    // Full-blast Max Fidelity Opus Configuration (Payload 111)
+    const OPUS_MAX_FMTP = "cbr=1;maxaveragebitrate=510000;maxplaybackrate=48000;minptime=10;sprop-maxcapturerate=48000;sprop-stereo=1;stereo=1;usedtx=0;useinbandfec=0";
+    
+    // Maximum Uncompressed H.264 Video Configuration (Payload 108)
+    const H264_MAX_FMTP = "level-asymmetry-allowed=1;max-br=20000;packetization-mode=1;profile-level-id=42e033;sps-pps-idr-in-keyframe=1";
 
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        const origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-        navigator.mediaDevices.getUserMedia = (c) => origGUM(overrideMediaConstraints(c));
+    function sanitizeSdp(sdpText) {
+        if (!sdpText || typeof sdpText !== 'string') return sdpText;
+
+        const lines = sdpText.split(/\r?\n/);
+        const updatedLines = lines.map(line => {
+            // Force absolute max Opus fidelity inbound & outbound (Payload 111)[cite: 1]
+            if (line.startsWith('a=fmtp:111') || (line.includes('opus/48000') && line.includes('maxaveragebitrate'))) {
+                return `a=fmtp:111 ${OPUS_MAX_FMTP}`;
+            }
+            // Force maximum uncompressed H.264 profile & bitrate ceiling (Payload 108)[cite: 1]
+            if (line.startsWith('a=fmtp:108')) {
+                return `a=fmtp:108 ${H264_MAX_FMTP}`;
+            }
+            return line;
+        });
+
+        return updatedLines.join('\r\n');
     }
 
-    if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
-        const origGDM = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
-        navigator.mediaDevices.getDisplayMedia = (c) => origGDM(overrideMediaConstraints(c));
+    function processDescription(desc) {
+        if (desc && typeof desc.sdp === 'string') {
+            desc.sdp = sanitizeSdp(desc.sdp);
+        }
+        return desc;
     }
 
-    // 2. Intercept SDP creation symmetrically for both Local and Remote descriptions
-    const origSetLocalDescription = RTCPeerConnection.prototype.setLocalDescription;
-    RTCPeerConnection.prototype.setLocalDescription = function(desc, ...args) {
-        if (desc && desc.sdp) {
-            desc.sdp = modifySdp(desc.sdp);
-        }
-        return origSetLocalDescription.call(this, desc, ...args);
+    // Intercept local descriptions (Outbound)
+    const origSetLocal = window.RTCPeerConnection.prototype.setLocalDescription;
+    window.RTCPeerConnection.prototype.setLocalDescription = function(desc) {
+        processDescription(desc);
+        return origSetLocal.apply(this, arguments);
     };
 
-    const origSetRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription;
-    RTCPeerConnection.prototype.setRemoteDescription = function(desc, ...args) {
-        if (desc && desc.sdp) {
-            desc.sdp = modifySdp(desc.sdp);
-        }
-        return origSetRemoteDescription.call(this, desc, ...args);
+    // Intercept remote descriptions (Inbound)
+    const origSetRemote = window.RTCPeerConnection.prototype.setRemoteDescription;
+    window.RTCPeerConnection.prototype.setRemoteDescription = function(desc) {
+        processDescription(desc);
+        return origSetRemote.apply(this, arguments);
     };
 
-    function modifySdp(sdp) {
-        let lines = sdp.split('\r\n');
-        let modifiedLines = [];
-        let currentMediaType = '';
-
-        for (let i = 0; i < lines.length; i++) {
-            let line = lines[i];
-
-            if (line.startsWith('m=audio')) {
-                currentMediaType = 'audio';
-            } else if (line.startsWith('m=video')) {
-                currentMediaType = 'video';
-            } else if (line.startsWith('m=')) {
-                currentMediaType = '';
-            }
-
-            // Target Opus Payload 111 specifically for inbound and outbound audio
-            if (currentMediaType === 'audio' && line.startsWith('a=fmtp:111')) {
-                // Strip out any existing constraints to prevent parameter conflicts
-                line = 'a=fmtp:111 minptime=10;useinbandfec=0;usedtx=0;stereo=1;sprop-stereo=1;maxaveragebitrate=510000;cbr=1;maxplaybackrate=48000';
-            }
-
-            modifiedLines.push(line);
-
-            // Inject high-performance video parameters right after media attributes
-            if (line.startsWith('a=rtcp-mux')) {
-                if (currentMediaType === 'video') {
-                    modifiedLines.push('a=fmtp:108 max-mbps=489600;max-fs=36864;max-br=8000;max-fps=60');
-                    modifiedLines.push('a=framerate:60');
-                }
-            }
-        }
-
-        let finalSdp = modifiedLines.join('\r\n');
-        
-        // Force global application-specific bandwidth limit to 8 Mbps video + max audio headroom
-        finalSdp = finalSdp.replace(/b=AS:\d+/g, 'b=AS:8500');
-        return finalSdp;
-    }
-
-    // 3. Force parameters on active tracks
-    const origAddTrack = RTCPeerConnection.prototype.addTrack;
-    RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
-        const sender = origAddTrack.apply(this, [track, ...streams]);
-        if (track.kind === 'video') {
-            track.contentHint = 'motion';
-            setTimeout(() => applyMaxParameters(sender), 500);
-        }
-        return sender;
-    };
-
-    function applyMaxParameters(sender) {
-        try {
-            const params = sender.getParameters();
-            if (params.encodings) {
-                params.encodings.forEach(enc => {
-                    enc.maxBitrate = 8000000; // 8 Mbps target
-                    enc.maxFramerate = 60;
-                    enc.scaleResolutionDownBy = 1.0;
-                    if (enc.hasOwnProperty('degradationPreference')) {
-                        enc.degradationPreference = 'maintain-framerate';
-                    }
-                });
-                sender.setParameters(params).catch(e => console.error("Error setting sender parameters:", e));
-            }
-        } catch (err) {
-            console.error(err);
-        }
-    }
+    console.info("[Tampermonkey] Ultimate Max Fidelity Instagram WebRTC Enforcer Initialized.");
 })();
